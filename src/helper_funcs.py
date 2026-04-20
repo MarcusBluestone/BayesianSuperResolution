@@ -33,10 +33,17 @@ def create_lrs(
         downsample_ratio=downsample_ratio,
     )
 
-    shifts = torch.rand(K, 2) * (shift_range[1] - shift_range[0]) + shift_range[0]
-    rots = torch.deg2rad(
-        torch.rand(K) * (rot_range[1] - rot_range[0]) + rot_range[0]
-    )
+    # Sample RELATIVE transforms with image 0 as reference
+    shifts = torch.zeros(K, 2, dtype=torch.float32)
+    rots = torch.zeros(K, dtype=torch.float32)
+
+    if K > 1:
+        shifts[1:] = (
+            torch.rand(K - 1, 2) * (shift_range[1] - shift_range[0]) + shift_range[0]
+        )
+        rots[1:] = torch.deg2rad(
+            torch.rand(K - 1) * (rot_range[1] - rot_range[0]) + rot_range[0]
+        )
 
     W = get_W_matrix(
         shifts=shifts,
@@ -66,7 +73,6 @@ def create_lrs(
             Image.fromarray(display_ready).save(save_file / f"lr_{k}.png")
 
     return y_reshaped, shifts, rots
-
 
 def get_W_matrix(
     shifts: torch.Tensor,

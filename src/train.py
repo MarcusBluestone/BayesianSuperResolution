@@ -1,6 +1,7 @@
 import json
 import shutil
 from pathlib import Path
+import copy
 
 import matplotlib.pyplot as plt
 import torch
@@ -29,9 +30,7 @@ gamma = 2.0
 A = 0.04
 r = 1.0
 
-bayes_patch_steps = 300
 bayes_full_steps = 300
-map_full_steps = 300
 
 patch_lr_bounds = (12, 12, 8, 8)   # (lr_top, lr_left, lr_h, lr_w)
 patch_hr_margin = 6
@@ -43,7 +42,7 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 # ============================================================
 # PATHS
 # ============================================================
-results_dir = Path("imgs/results")
+results_dir = Path("imgs/results_new")
 data_dir = results_dir / "data"
 bayes_dir = results_dir / "bayes"
 map_dir = results_dir / "map"
@@ -84,16 +83,28 @@ def save_image(img: torch.Tensor, path: Path):
     Image.fromarray(tensor_to_uint8_image(img)).save(path)
 
 
-def save_loss_plot(losses, path: Path, title: str):
-    plt.figure()
-    plt.plot(losses)
+def save_loss_plot(losses, path: Path, title: str, stage_boundaries=None):
+    plt.figure(figsize=(10, 5))
+    plt.plot(losses, label="Loss")
     plt.xlabel("Step")
     plt.ylabel("Loss")
     plt.title(title)
+
+    if stage_boundaries is not None:
+        for i, boundary in enumerate(stage_boundaries):
+            plt.axvline(
+                x=boundary,
+                linestyle="--",
+                linewidth=1.5,
+                color="gray",
+                alpha=0.8,
+                label="Stage transition" if i == 0 else None,
+            )
+
+    plt.legend()
     plt.tight_layout()
     plt.savefig(path)
     plt.close()
-
 
 def save_params(path: Path, shifts, rots, gamma_value):
     payload = {
@@ -105,30 +116,65 @@ def save_params(path: Path, shifts, rots, gamma_value):
         json.dump(payload, f, indent=2)
 
 
-def train_model(
+def set_trainable(model, *, shifts: bool, rots: bool, gamma: bool, x: bool | None = None):
+    if hasattr(model, "shift_params"):
+        model.shift_params.requires_grad_(shifts)
+    if hasattr(model, "rot_params"):
+        model.rot_params.requires_grad_(rots)
+    if hasattr(model, "gamma"):
+        model.gamma.requires_grad_(gamma)
+    if x is not None and hasattr(model, "x"):
+        model.x.requires_grad_(x)
+
+
+def run_stage(
     model: BaseModel,
     y_obs: torch.Tensor,
-    steps: int,
-    loss_plot_path: Path,
+    lr: float,
     name: str,
+    max_steps: int = 800,
+    patience: int = 40,
+    min_delta: float = 10,
 ):
     model = model.to(device)
     y_obs = y_obs.to(device=device, dtype=torch.float32)
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
-    losses = []
+    params = [p for p in model.parameters() if p.requires_grad]
+    optimizer = torch.optim.Adam(params, lr=lr)
 
-    print(f"Beginning training: {name}")
-    for _ in tqdm(range(steps), desc=name):
+    losses = []
+    best_loss = float("inf")
+    best_step = -1
+    best_state = copy.deepcopy(model.state_dict())
+    steps_since_improvement = 0
+
+    print(f"Beginning stage: {name}")
+    for step in tqdm(range(max_steps), desc=name):
         optimizer.zero_grad()
         loss = model(y_obs)
         loss.backward()
         optimizer.step()
-        losses.append(float(loss.item()))
 
-    save_loss_plot(losses, loss_plot_path, title=name)
-    return losses
+        loss_value = float(loss.item())
+        losses.append(loss_value)
 
+        if best_loss - loss_value > min_delta:
+            best_loss = loss_value
+            best_step = step
+            best_state = copy.deepcopy(model.state_dict())
+            steps_since_improvement = 0
+        else:
+            steps_since_improvement += 1
+
+        if steps_since_improvement >= patience:
+            print(
+                f"Early stopping in {name} at step {step + 1} "
+                f"(best step: {best_step + 1}, best loss: {best_loss:.6f})"
+            )
+            break
+
+    model.load_state_dict(best_state)
+    return losses, best_loss, best_step
 
 def build_covariances(v_params):
     Z_x = generate_Z_x(v_params, A=A, r=r)
@@ -180,6 +226,7 @@ with open(data_dir / "true_values.json", "w") as f:
 # ============================================================
 # GRID SETUP
 # ============================================================
+print("Setting Up Variables. Inversion is slow...")
 v_params_patch = build_grid_params(
     hr_shape=hr_shape,
     downsample_ratio=downsample_ratio,
@@ -205,6 +252,7 @@ print("\n" + "=" * 60)
 print("BAYESIAN PIPELINE")
 print("=" * 60)
 
+
 bayes_patch = BayesModel(
     v_params=v_params_patch,
     K=K,
@@ -216,12 +264,44 @@ bayes_patch = BayesModel(
 if use_true_init:
     bayes_patch.set_params(true_shifts, true_rots, gamma)
 
-train_model(
+# Stage 1: shifts only
+set_trainable(bayes_patch, shifts=True, rots=False, gamma=False)
+losses_1, best_loss_1, best_step_1 = run_stage(
     model=bayes_patch,
     y_obs=y_obs_patch,
-    steps=bayes_patch_steps,
-    loss_plot_path=bayes_dir / "patch" / "loss" / "loss_plot.png",
-    name="bayes_patch",
+    lr=1e-2,
+    name="bayes_patch_stage1_shifts",
+)
+
+# Stage 2: shifts + rotations
+set_trainable(bayes_patch, shifts=True, rots=True, gamma=False)
+losses_2, best_loss_2, best_step_2 = run_stage(
+    model=bayes_patch,
+    y_obs=y_obs_patch,
+    lr=5e-3,
+    name="bayes_patch_stage2_shifts_rots",
+)
+
+# Stage 3: shifts + rotations + gamma
+set_trainable(bayes_patch, shifts=True, rots=True, gamma=True)
+losses_3, best_loss_3, best_step_3 = run_stage(
+    model=bayes_patch,
+    y_obs=y_obs_patch,
+    lr=2e-3,
+    name="bayes_patch_stage3_all",
+    max_steps = 2_000
+)
+all_bayes_losses = losses_1 + losses_2 + losses_3
+bayes_stage_boundaries = [
+    len(losses_1),
+    len(losses_1) + len(losses_2),
+]
+
+save_loss_plot(
+    all_bayes_losses,
+    bayes_dir / "patch" / "loss" / "loss_plot.png",
+    title="bayes_patch_staged",
+    stage_boundaries=bayes_stage_boundaries,
 )
 
 bayes_learned_shifts = bayes_patch.shifts.detach().cpu()
@@ -279,12 +359,41 @@ map_full = MapModel(
 if use_true_init:
     map_full.set_params(true_shifts, true_rots, gamma)
 
-train_model(
+set_trainable(map_full, shifts=True, rots=False, gamma=False, x=True)
+losses_1, _, _ = run_stage(
     model=map_full,
     y_obs=y_obs,
-    steps=map_full_steps,
-    loss_plot_path=map_dir / "full" / "loss" / "loss_plot.png",
-    name="map_full",
+    lr=1e-2,
+    name="map_full_stage1_shifts",
+)
+
+set_trainable(map_full, shifts=True, rots=True, gamma=False, x=True)
+losses_2, _, _ = run_stage(
+    model=map_full,
+    y_obs=y_obs,
+    lr=5e-3,
+    name="map_full_stage2_shifts_rots",
+)
+
+set_trainable(map_full, shifts=True, rots=True, gamma=True, x=True)
+losses_3, _, _ = run_stage(
+    model=map_full,
+    y_obs=y_obs,
+    lr=2e-3,
+    name="map_full_stage3_all",
+)
+
+all_map_losses = losses_1 + losses_2 + losses_3
+map_stage_boundaries = [
+    len(losses_1),
+    len(losses_1) + len(losses_2),
+]
+
+save_loss_plot(
+    all_map_losses,
+    map_dir / "full" / "loss" / "loss_plot.png",
+    title="map_full_staged",
+    stage_boundaries=map_stage_boundaries,
 )
 
 map_learned_shifts = map_full.shifts.detach().cpu()
