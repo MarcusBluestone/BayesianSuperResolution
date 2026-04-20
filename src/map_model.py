@@ -22,10 +22,10 @@ class MapModel(BaseModel):
         y_flat = y_obs.reshape(K * M, 1)
 
         y_pred = W @ self.x
-        likelihood_loss = torch.sum((y_pred - y_flat) ** 2)
-        prior_loss = 0.5 * (self.x.t() @ self.Z_x_inv @ self.x)
+        likelihood_loss = self.beta * torch.sum((y_pred - y_flat) ** 2)
+        prior_loss = (self.x.t() @ self.Z_x_inv @ self.x).squeeze()
 
-        return likelihood_loss + prior_loss
+        return 0.5 * (likelihood_loss + prior_loss)
 
     def get_HR(self, y_obs: torch.Tensor | None = None) -> torch.Tensor:
         return self.x.view(*self.hr_shape.tolist()).detach().cpu()

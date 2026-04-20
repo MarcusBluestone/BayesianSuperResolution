@@ -65,7 +65,7 @@ def create_lrs(
             ).astype(np.uint8)
             Image.fromarray(display_ready).save(save_file / f"lr_{k}.png")
 
-    return y_reshaped
+    return y_reshaped, shifts, rots
 
 
 def get_W_matrix(

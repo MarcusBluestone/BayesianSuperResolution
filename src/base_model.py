@@ -41,3 +41,9 @@ class BaseModel(nn.Module):
 
     def get_HR(self, y_obs: torch.Tensor | None = None) -> torch.Tensor:
         raise NotImplementedError
+    
+    def set_params(self, shifts, rots, gamma):
+        with torch.no_grad():
+            self.shifts.copy_(shifts.to(self.shifts.device, dtype=self.shifts.dtype))
+            self.rots.copy_(rots.to(self.rots.device, dtype=self.rots.dtype))
+            self.gamma.copy_(torch.as_tensor(gamma, device=self.gamma.device, dtype=self.gamma.dtype))
