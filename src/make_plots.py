@@ -105,7 +105,7 @@ for i in range(K):
 
 plt.xlabel("Shift x")
 plt.ylabel("Shift y")
-plt.title("Shift comparison with error vectors")
+plt.title("Shift Comparison")
 plt.legend()
 plt.axis("equal")  # preserve geometry
 plt.tight_layout()
