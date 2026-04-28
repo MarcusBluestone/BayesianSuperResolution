@@ -18,7 +18,7 @@ from src.map_model import MapModel
 # ============================================================
 # CONFIG
 # ============================================================
-hr_shape = torch.tensor([256, 256])   # (H, W) = paper's 384 x 256
+hr_shape = torch.tensor([128, 128])   # (H, W) = paper's 384 x 256
 K = 16
 beta = 400.0
 downsample_ratio = 4
@@ -32,17 +32,16 @@ r = 1.0
 bayes_full_steps = 300
 
 # patch_lr_bounds = (12, 12, 8, 8)   # (lr_top, lr_left, lr_h, lr_w)
-patch_lr_bounds = (4, 4, 16, 16)   # Larger patch?
+patch_lr_bounds = (4, 4, 20, 20)   # Larger patch?
 patch_hr_margin = 6
 
 use_true_init = False   # debugging only
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
-
 # ============================================================
 # PATHS
 # ============================================================
-results_dir = Path("imgs/results_new")
+results_dir = Path("imgs/wider_bayes")
 data_dir = results_dir / "data"
 bayes_dir = results_dir / "bayes"
 map_dir = results_dir / "map"
@@ -330,8 +329,6 @@ bayes_full = bayes_full.to(device)
 print("Running Bayesian full reconstruction...")
 bayes_full_recon = bayes_full.get_HR(
     y_obs.to(device=device, dtype=torch.float32),
-    steps=bayes_full_steps,
-    lr=1e-2,
 )
 
 save_image(bayes_full_recon, bayes_dir / "full" / "reconstruction.png")

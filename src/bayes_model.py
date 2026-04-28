@@ -97,9 +97,10 @@ class BayesModel(BaseModel):
         """
         Return the posterior mean high-resolution image.
         """
-        if y_obs is None:
-            raise ValueError("BayesModel.get_HR requires y_obs")
+        with torch.no_grad():
+            if y_obs is None:
+                raise ValueError("BayesModel.get_HR requires y_obs")
 
-        mu, _, _, _, _ = self._posterior_mu_and_Sigma_inv(y_obs)
+            mu, _, _, _, _ = self._posterior_mu_and_Sigma_inv(y_obs)
 
-        return mu.view(*self.hr_shape.tolist()).detach().cpu()
+            return mu.view(*self.hr_shape.tolist()).detach().cpu()
