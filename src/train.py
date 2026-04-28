@@ -41,7 +41,7 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 # ============================================================
 # PATHS
 # ============================================================
-results_dir = Path("imgs/wider_bayes")
+results_dir = Path("imgs/larger_updated")
 data_dir = results_dir / "data"
 bayes_dir = results_dir / "bayes"
 map_dir = results_dir / "map"

@@ -76,7 +76,10 @@ def build_grid_params(
 
     v_i = get_grid_from_ranges(hr_top, hr_bottom, hr_left, hr_right, scale=1.0)
     v_j = get_grid_from_ranges(lr_top, lr_bottom, lr_left, lr_right, scale=downsample_ratio)
-    v_avg = v_i.mean(dim=1, keepdim=True)
+    v_avg = torch.tensor(
+        [(H_hr - 1) / 2.0, (W_hr - 1) / 2.0], dtype=torch.float32
+        ).unsqueeze(1)
+
 
     return GridParams(
         v_i=v_i,
