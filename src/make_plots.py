@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 
-results_dir = Path("imgs/results")
+results_dir = Path("imgs/results_final")
 plot_dir = results_dir / "plots"
 plot_dir.mkdir(parents=True, exist_ok=True)
 

@@ -19,7 +19,7 @@ from src.map_model import MapModel
 # ============================================================
 # CONFIG
 # ============================================================
-hr_shape = torch.tensor([128, 128])   # (H, W) = paper's 384 x 256
+hr_shape = torch.tensor([256, 256])   # (H, W) = paper's 384 x 256
 K = 16
 beta = 400.0
 downsample_ratio = 4
@@ -32,7 +32,8 @@ r = 1.0
 
 bayes_full_steps = 300
 
-patch_lr_bounds = (12, 12, 8, 8)   # (lr_top, lr_left, lr_h, lr_w)
+# patch_lr_bounds = (12, 12, 8, 8)   # (lr_top, lr_left, lr_h, lr_w)
+patch_lr_bounds = (4, 4, 16, 16)   # Larger patch?
 patch_hr_margin = 6
 
 use_true_init = False   # debugging only
@@ -42,13 +43,13 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 # ============================================================
 # PATHS
 # ============================================================
-results_dir = Path("imgs/results_new")
+results_dir = Path("imgs/results_large")
 data_dir = results_dir / "data"
 bayes_dir = results_dir / "bayes"
 map_dir = results_dir / "map"
 
 if results_dir.exists():
-    shutil.rmtree(results_dir)
+    raise ValueError("Choose New Directory")
 
 for path in [
     results_dir,
@@ -134,7 +135,7 @@ def run_stage(
     name: str,
     max_steps: int = 800,
     patience: int = 40,
-    min_delta: float = 10,
+    min_delta: float = 5,
 ):
     model = model.to(device)
     y_obs = y_obs.to(device=device, dtype=torch.float32)
@@ -226,6 +227,7 @@ with open(data_dir / "true_values.json", "w") as f:
 # ============================================================
 # GRID SETUP
 # ============================================================
+
 print("Setting Up Variables. Inversion is slow...")
 v_params_patch = build_grid_params(
     hr_shape=hr_shape,
@@ -234,6 +236,7 @@ v_params_patch = build_grid_params(
     hr_margin=patch_hr_margin,
 )
 Z_x_patch, Z_x_patch_inv = build_covariances(v_params_patch)
+
 y_obs_patch = crop_y_obs_to_patch(y_obs, v_params_patch.lr_bounds)
 
 v_params_full = build_grid_params(
@@ -409,4 +412,4 @@ save_params(
 save_image(map_full.get_HR(), map_dir / "full" / "reconstruction.png")
 
 print("\nDone.")
-print(f"Results saved to: {results_dir}")
+print(f"Results saved to: {results_dir}") 
