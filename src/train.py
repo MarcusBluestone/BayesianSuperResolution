@@ -1,5 +1,4 @@
 import json
-import shutil
 from pathlib import Path
 import copy
 
@@ -329,7 +328,7 @@ bayes_full.set_params(bayes_learned_shifts, bayes_learned_rots, bayes_learned_ga
 bayes_full = bayes_full.to(device)
 
 print("Running Bayesian full reconstruction...")
-bayes_full_recon = bayes_full.reconstruct_full_iterative(
+bayes_full_recon = bayes_full.get_HR(
     y_obs.to(device=device, dtype=torch.float32),
     steps=bayes_full_steps,
     lr=1e-2,
