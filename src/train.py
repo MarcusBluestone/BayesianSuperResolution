@@ -41,7 +41,7 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 # ============================================================
 # PATHS
 # ============================================================
-results_dir = Path("imgs/larger_updated")
+results_dir = Path("imgs/test_optim")
 data_dir = results_dir / "data"
 bayes_dir = results_dir / "bayes"
 map_dir = results_dir / "map"
@@ -139,7 +139,8 @@ def run_stage(
     y_obs = y_obs.to(device=device, dtype=torch.float32)
 
     params = [p for p in model.parameters() if p.requires_grad]
-    optimizer = torch.optim.Adam(params, lr=lr)
+    optimizer = torch.optim.LBFGS(params, max_iter = 20, lr=lr, line_search_fn="strong_wolfe")
+
 
     losses = []
     best_loss = float("inf")
@@ -149,12 +150,24 @@ def run_stage(
 
     print(f"Beginning stage: {name}")
     for step in tqdm(range(max_steps), desc=name):
-        optimizer.zero_grad()
-        loss = model(y_obs)
-        loss.backward()
-        optimizer.step()
+        def closure():
+            optimizer.zero_grad()
+            loss = model(y_obs)
+            loss.backward()
+            return loss
 
-        loss_value = float(loss.item())
+        optimizer.step(closure)
+
+        with torch.no_grad():
+            loss_value = float(model(y_obs).item())
+
+        # losses.append(loss_value)
+        # optimizer.zero_grad()
+        # loss = model(y_obs)
+        # loss.backward()
+        # optimizer.step()
+
+        # loss_value = float(loss.item())
         losses.append(loss_value)
 
         if best_loss - loss_value > min_delta:
@@ -338,7 +351,6 @@ save_params(
     bayes_learned_rots,
     bayes_learned_gamma,
 )
-
 
 # ============================================================
 # MAP: FULL TRAINING ONLY
