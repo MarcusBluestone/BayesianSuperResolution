@@ -82,7 +82,7 @@ class BayesModel(BaseModel):
         # Eq. (15): mu^T Z_x^{-1} mu
         prior_term = (mu.T @ self.Z_x_inv @ mu).squeeze()
 
-        # Eq. (15): -log|Sigma| = log|Sigma^{-1}|
+        # Eq. (15): lodget_term = -log|Sigma| = log|Sigma^{-1}|
         logdet_term = logdet_Sigma_inv
 
         neg_log_likelihood = 0.5 * (

@@ -1,199 +1,69 @@
 import json
 from pathlib import Path
-import copy
 
-import matplotlib.pyplot as plt
 import torch
 from PIL import Image
 from torchvision import transforms
-from tqdm import tqdm
 
-from src.base_model import BaseModel
 from src.bayes_model import BayesModel
 from src.grid_funcs import build_grid_params
-from src.helper_funcs import create_lrs, crop_y_obs_to_patch, generate_Z_x
+from src.helper_funcs import create_lrs, crop_y_obs_to_patch
 from src.map_model import MapModel
+from src.train_utils import (
+    build_covariances,
+    run_three_stage_training,
+    save_image,
+    save_loss_plot,
+    save_params,
+    set_trainable,
+    run_stage,
+)
 
 
 # ============================================================
 # CONFIG
 # ============================================================
-hr_shape = torch.tensor([128, 128])   # (H, W) = paper's 384 x 256
+hr_shape = torch.tensor([128, 128])
 K = 16
 beta = 400.0
 downsample_ratio = 4
 shift_range = [-2, 2]
-rot_range = [-4, 4]   # degrees
+rot_range = [-4, 4]       # degrees
 gamma = 2.0
 
 A = 0.04
 r = 1.0
 
-bayes_full_steps = 300
+patch_lr_bounds = (11, 11, 9, 9)   # (lr_top, lr_left, lr_h, lr_w) — centred 9x9 patch
+patch_lr_bounds = (4, 4, 20, 20)   # (lr_top, lr_left, lr_h, lr_w) — centred 9x9 patch
 
-# patch_lr_bounds = (12, 12, 8, 8)   # (lr_top, lr_left, lr_h, lr_w)
-# patch_lr_bounds = (4, 4, 20, 20)   # Larger patch?
-# patch_hr_margin = 6
-patch_lr_bounds = (11, 11, 9, 9)
-patch_hr_margin = 8
+patch_hr_margin = 5
 
-use_true_init = False   # debugging only
+use_true_init = False
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
+
 # ============================================================
-# PATHS
+# DIRECTORY LAYOUT
 # ============================================================
-results_dir = Path("imgs/test_claude_upgrade")
-data_dir = results_dir / "data"
-bayes_dir = results_dir / "bayes"
-map_dir = results_dir / "map"
+results_dir = Path("imgs/bigger_patch")
+data_dir    = results_dir / "data"
+bayes_dir   = results_dir / "bayes"
+map_full_dir   = results_dir / "map_full"
+map_patch_dir  = results_dir / "map_patch"
 
 if results_dir.exists():
-    raise ValueError("Choose New Directory")
+    raise ValueError("Choose a new results directory")
 
 for path in [
     results_dir,
-    data_dir,
-    data_dir / "lr",
-    bayes_dir,
-    bayes_dir / "patch",
-    bayes_dir / "patch" / "loss",
-    bayes_dir / "full",
-    map_dir,
-    map_dir / "full",
-    map_dir / "full" / "loss",
+    data_dir, data_dir / "lr",
+    bayes_dir, bayes_dir / "patch", bayes_dir / "patch" / "loss", bayes_dir / "full",
+    map_full_dir, map_full_dir / "full", map_full_dir / "full" / "loss",
+    map_patch_dir, map_patch_dir / "patch", map_patch_dir / "patch" / "loss",
+    map_patch_dir, map_patch_dir / "full",
 ]:
     path.mkdir(parents=True, exist_ok=True)
-
-
-# ============================================================
-# UTILS
-# ============================================================
-def tensor_to_uint8_image(img: torch.Tensor):
-    img = ((img.detach().cpu() + 0.5) * 255).clamp(0, 255).byte()
-
-    if img.dim() == 2:
-        return img.numpy()
-    if img.dim() == 3:
-        return img.permute(1, 2, 0).numpy()
-
-    raise ValueError(f"Unexpected image shape: {tuple(img.shape)}")
-
-
-def save_image(img: torch.Tensor, path: Path):
-    Image.fromarray(tensor_to_uint8_image(img)).save(path)
-
-
-def save_loss_plot(losses, path: Path, title: str, stage_boundaries=None):
-    plt.figure(figsize=(10, 5))
-    plt.plot(losses, label="Loss")
-    plt.xlabel("Step")
-    plt.ylabel("Loss")
-    plt.title(title)
-
-    if stage_boundaries is not None:
-        for i, boundary in enumerate(stage_boundaries):
-            plt.axvline(
-                x=boundary,
-                linestyle="--",
-                linewidth=1.5,
-                color="gray",
-                alpha=0.8,
-                label="Stage transition" if i == 0 else None,
-            )
-
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig(path)
-    plt.close()
-
-def save_params(path: Path, shifts, rots, gamma_value):
-    payload = {
-        "shifts": torch.as_tensor(shifts).detach().cpu().tolist(),
-        "rots": torch.as_tensor(rots).detach().cpu().tolist(),
-        "gamma": float(torch.as_tensor(gamma_value).detach().cpu().item()),
-    }
-    with open(path, "w") as f:
-        json.dump(payload, f, indent=2)
-
-
-def set_trainable(model, *, shifts: bool, rots: bool, gamma: bool, x: bool | None = None):
-    if hasattr(model, "shift_params"):
-        model.shift_params.requires_grad_(shifts)
-    if hasattr(model, "rot_params"):
-        model.rot_params.requires_grad_(rots)
-    if hasattr(model, "gamma"):
-        model.gamma.requires_grad_(gamma)
-    if x is not None and hasattr(model, "x"):
-        model.x.requires_grad_(x)
-
-
-def run_stage(
-    model: BaseModel,
-    y_obs: torch.Tensor,
-    lr: float,
-    name: str,
-    max_steps: int = 800,
-    patience: int = 40,
-    min_delta: float = 5,
-):
-    model = model.to(device)
-    y_obs = y_obs.to(device=device, dtype=torch.float32)
-
-    params = [p for p in model.parameters() if p.requires_grad]
-    optimizer = torch.optim.LBFGS(params, max_iter = 20, lr=lr, line_search_fn="strong_wolfe")
-
-
-    losses = []
-    best_loss = float("inf")
-    best_step = -1
-    best_state = copy.deepcopy(model.state_dict())
-    steps_since_improvement = 0
-
-    print(f"Beginning stage: {name}")
-    for step in tqdm(range(max_steps), desc=name):
-        def closure():
-            optimizer.zero_grad()
-            loss = model(y_obs)
-            loss.backward()
-            return loss
-
-        optimizer.step(closure)
-
-        with torch.no_grad():
-            loss_value = float(model(y_obs).item())
-
-        # losses.append(loss_value)
-        # optimizer.zero_grad()
-        # loss = model(y_obs)
-        # loss.backward()
-        # optimizer.step()
-
-        # loss_value = float(loss.item())
-        losses.append(loss_value)
-
-        if best_loss - loss_value > min_delta:
-            best_loss = loss_value
-            best_step = step
-            best_state = copy.deepcopy(model.state_dict())
-            steps_since_improvement = 0
-        else:
-            steps_since_improvement += 1
-
-        if steps_since_improvement >= patience:
-            print(
-                f"Early stopping in {name} at step {step + 1} "
-                f"(best step: {best_step + 1}, best loss: {best_loss:.6f})"
-            )
-            break
-
-    model.load_state_dict(best_state)
-    return losses, best_loss, best_step
-
-def build_covariances(v_params):
-    Z_x = generate_Z_x(v_params, A=A, r=r)
-    Z_x_inv = torch.linalg.inv(Z_x)
-    return Z_x, Z_x_inv
 
 
 # ============================================================
@@ -221,35 +91,31 @@ with open(data_dir / "true_values.json", "w") as f:
     json.dump(
         {
             "hr_shape_hw": hr_shape.tolist(),
-            "K": K,
-            "beta": beta,
+            "K": K, "beta": beta,
             "downsample_ratio": downsample_ratio,
             "shift_range": shift_range,
             "rot_range_deg": rot_range,
             "shifts": true_shifts.tolist(),
             "rots": true_rots.tolist(),
             "gamma": gamma,
-            "A": A,
-            "r": r,
+            "A": A, "r": r,
         },
-        f,
-        indent=2,
+        f, indent=2,
     )
 
 
 # ============================================================
-# GRID SETUP
+# GRID + COVARIANCE SETUP
 # ============================================================
+print("Setting up grids and covariances (inversion is slow)...")
 
-print("Setting Up Variables. Inversion is slow...")
 v_params_patch = build_grid_params(
     hr_shape=hr_shape,
     downsample_ratio=downsample_ratio,
     lr_patch=patch_lr_bounds,
     hr_margin=patch_hr_margin,
 )
-Z_x_patch, Z_x_patch_inv = build_covariances(v_params_patch)
-
+Z_x_patch, Z_x_patch_inv = build_covariances(v_params_patch, A=A, r=r)
 y_obs_patch = crop_y_obs_to_patch(y_obs, v_params_patch.lr_bounds)
 
 v_params_full = build_grid_params(
@@ -258,168 +124,177 @@ v_params_full = build_grid_params(
     lr_patch=None,
     hr_margin=0,
 )
-Z_x_full, Z_x_full_inv = build_covariances(v_params_full)
+Z_x_full, Z_x_full_inv = build_covariances(v_params_full, A=A, r=r)
 
 
 # ============================================================
-# BAYESIAN: PATCH TRAINING -> FULL RECONSTRUCTION
+# PIPELINE 1: BAYESIAN  (patch param-estimation -> full recon)
 # ============================================================
 print("\n" + "=" * 60)
-print("BAYESIAN PIPELINE")
+print("PIPELINE 1: BAYESIAN")
 print("=" * 60)
 
-
 bayes_patch = BayesModel(
-    v_params=v_params_patch,
-    K=K,
-    beta=beta,
-    Z_x=Z_x_patch,
-    Z_x_inv=Z_x_patch_inv,
+    v_params=v_params_patch, K=K, beta=beta,
+    Z_x=Z_x_patch, Z_x_inv=Z_x_patch_inv,
 )
-
 if use_true_init:
     bayes_patch.set_params(true_shifts, true_rots, gamma)
 
-# Stage 1: shifts only
-set_trainable(bayes_patch, shifts=True, rots=False, gamma=False)
-losses_1, best_loss_1, best_step_1 = run_stage(
+all_bayes_losses, bayes_boundaries = run_three_stage_training(
     model=bayes_patch,
     y_obs=y_obs_patch,
-    lr=1e-2,
-    name="bayes_patch_stage1_shifts",
+    device=device,
+    name_prefix="bayes_patch",
+    has_x=False,
+    stage3_max_steps=2_000,
 )
-
-# Stage 2: shifts + rotations
-set_trainable(bayes_patch, shifts=True, rots=True, gamma=False)
-losses_2, best_loss_2, best_step_2 = run_stage(
-    model=bayes_patch,
-    y_obs=y_obs_patch,
-    lr=5e-3,
-    name="bayes_patch_stage2_shifts_rots",
-)
-
-# Stage 3: shifts + rotations + gamma
-set_trainable(bayes_patch, shifts=True, rots=True, gamma=True)
-losses_3, best_loss_3, best_step_3 = run_stage(
-    model=bayes_patch,
-    y_obs=y_obs_patch,
-    lr=2e-3,
-    name="bayes_patch_stage3_all",
-    max_steps = 2_000
-)
-all_bayes_losses = losses_1 + losses_2 + losses_3
-bayes_stage_boundaries = [
-    len(losses_1),
-    len(losses_1) + len(losses_2),
-]
 
 save_loss_plot(
     all_bayes_losses,
     bayes_dir / "patch" / "loss" / "loss_plot.png",
     title="bayes_patch_staged",
-    stage_boundaries=bayes_stage_boundaries,
+    stage_boundaries=bayes_boundaries,
 )
 
-bayes_learned_shifts = bayes_patch.shifts.detach().cpu()
-bayes_learned_rots = bayes_patch.rots.detach().cpu()
-bayes_learned_gamma = bayes_patch.gamma.detach().cpu()
+bayes_shifts = bayes_patch.shifts.detach().cpu()
+bayes_rots   = bayes_patch.rots.detach().cpu()
+bayes_gamma  = bayes_patch.gamma.detach().cpu()
+save_params(bayes_dir / "patch" / "learned_params.json", bayes_shifts, bayes_rots, bayes_gamma)
 
-save_params(
-    bayes_dir / "patch" / "learned_params.json",
-    bayes_learned_shifts,
-    bayes_learned_rots,
-    bayes_learned_gamma,
-)
-
+# Full reconstruction with learned params
 bayes_full = BayesModel(
-    v_params=v_params_full,
-    K=K,
-    beta=beta,
-    Z_x=Z_x_full,
-    Z_x_inv=Z_x_full_inv,
+    v_params=v_params_full, K=K, beta=beta,
+    Z_x=Z_x_full, Z_x_inv=Z_x_full_inv,
 )
-bayes_full.set_params(bayes_learned_shifts, bayes_learned_rots, bayes_learned_gamma)
+bayes_full.set_params(bayes_shifts, bayes_rots, bayes_gamma)
 bayes_full = bayes_full.to(device)
 
 print("Running Bayesian full reconstruction...")
-bayes_full_recon = bayes_full.get_HR(
-    y_obs.to(device=device, dtype=torch.float32),
-)
+bayes_recon = bayes_full.get_HR(y_obs.to(device=device, dtype=torch.float32))
+save_image(bayes_recon, bayes_dir / "full" / "reconstruction.png")
+save_params(bayes_dir / "full" / "params_used.json", bayes_shifts, bayes_rots, bayes_gamma)
 
-save_image(bayes_full_recon, bayes_dir / "full" / "reconstruction.png")
-save_params(
-    bayes_dir / "full" / "params_used.json",
-    bayes_learned_shifts,
-    bayes_learned_rots,
-    bayes_learned_gamma,
-)
 
 # ============================================================
-# MAP: FULL TRAINING ONLY
+# PIPELINE 2: MAP — FULL IMAGE
 # ============================================================
 print("\n" + "=" * 60)
-print("MAP PIPELINE (FULL ONLY)")
+print("PIPELINE 2: MAP (full image)")
 print("=" * 60)
 
-map_full = MapModel(
-    v_params=v_params_full,
-    K=K,
-    beta=beta,
-    Z_x=Z_x_full,
-    Z_x_inv=Z_x_full_inv,
+map_full_model = MapModel(
+    v_params=v_params_full, K=K, beta=beta,
+    Z_x=Z_x_full, Z_x_inv=Z_x_full_inv,
 )
-
 if use_true_init:
-    map_full.set_params(true_shifts, true_rots, gamma)
+    map_full_model.set_params(true_shifts, true_rots, gamma)
 
-set_trainable(map_full, shifts=True, rots=False, gamma=False, x=True)
-losses_1, _, _ = run_stage(
-    model=map_full,
+all_map_full_losses, map_full_boundaries = run_three_stage_training(
+    model=map_full_model,
     y_obs=y_obs,
-    lr=1e-2,
-    name="map_full_stage1_shifts",
+    device=device,
+    name_prefix="map_full",
+    has_x=True,
 )
-
-set_trainable(map_full, shifts=True, rots=True, gamma=False, x=True)
-losses_2, _, _ = run_stage(
-    model=map_full,
-    y_obs=y_obs,
-    lr=5e-3,
-    name="map_full_stage2_shifts_rots",
-)
-
-set_trainable(map_full, shifts=True, rots=True, gamma=True, x=True)
-losses_3, _, _ = run_stage(
-    model=map_full,
-    y_obs=y_obs,
-    lr=2e-3,
-    name="map_full_stage3_all",
-)
-
-all_map_losses = losses_1 + losses_2 + losses_3
-map_stage_boundaries = [
-    len(losses_1),
-    len(losses_1) + len(losses_2),
-]
 
 save_loss_plot(
-    all_map_losses,
-    map_dir / "full" / "loss" / "loss_plot.png",
+    all_map_full_losses,
+    map_full_dir / "full" / "loss" / "loss_plot.png",
     title="map_full_staged",
-    stage_boundaries=map_stage_boundaries,
+    stage_boundaries=map_full_boundaries,
 )
 
-map_learned_shifts = map_full.shifts.detach().cpu()
-map_learned_rots = map_full.rots.detach().cpu()
-map_learned_gamma = map_full.gamma.detach().cpu()
+map_full_shifts = map_full_model.shifts.detach().cpu()
+map_full_rots   = map_full_model.rots.detach().cpu()
+map_full_gamma  = map_full_model.gamma.detach().cpu()
+save_params(map_full_dir / "full" / "learned_params.json", map_full_shifts, map_full_rots, map_full_gamma)
+save_image(map_full_model.get_HR(), map_full_dir / "full" / "reconstruction.png")
 
-save_params(
-    map_dir / "full" / "learned_params.json",
-    map_learned_shifts,
-    map_learned_rots,
-    map_learned_gamma,
+
+# ============================================================
+# PIPELINE 3: MAP — PATCH  (apples-to-apples with Bayesian)
+# ============================================================
+print("\n" + "=" * 60)
+print("PIPELINE 3: MAP (patch, same patch as Bayesian)")
+print("=" * 60)
+
+# The MAP patch model needs a v_params that covers only the patch HR region,
+# AND its x parameter only spans those HR pixels.  We reuse v_params_patch
+# directly — MapModel stores x with shape N = hr_patch_h * hr_patch_w.
+map_patch_model = MapModel(
+    v_params=v_params_patch, K=K, beta=beta,
+    Z_x=Z_x_patch, Z_x_inv=Z_x_patch_inv,
 )
-save_image(map_full.get_HR(), map_dir / "full" / "reconstruction.png")
+if use_true_init:
+    map_patch_model.set_params(true_shifts, true_rots, gamma)
 
-print("\nDone.")
-print(f"Results saved to: {results_dir}") 
+# Train on the SAME cropped y_obs_patch that Bayesian uses.
+all_map_patch_losses, map_patch_boundaries = run_three_stage_training(
+    model=map_patch_model,
+    y_obs=y_obs_patch,
+    device=device,
+    name_prefix="map_patch",
+    has_x=True,
+)
+
+save_loss_plot(
+    all_map_patch_losses,
+    map_patch_dir / "patch" / "loss" / "loss_plot.png",
+    title="map_patch_staged",
+    stage_boundaries=map_patch_boundaries,
+)
+
+map_patch_shifts = map_patch_model.shifts.detach().cpu()
+map_patch_rots   = map_patch_model.rots.detach().cpu()
+map_patch_gamma  = map_patch_model.gamma.detach().cpu()
+save_params(map_patch_dir / "patch" / "learned_params.json", map_patch_shifts, map_patch_rots, map_patch_gamma)
+
+# Reconstruct the full HR image using the learned patch params in a fresh full model.
+# (MAP patch only optimised the patch HR pixels; for a fair visual we need a full recon.)
+map_patch_full_recon_model = MapModel(
+    v_params=v_params_full, K=K, beta=beta,
+    Z_x=Z_x_full, Z_x_inv=Z_x_full_inv,
+)
+map_patch_full_recon_model.set_params(map_patch_shifts, map_patch_rots, map_patch_gamma)
+map_patch_full_recon_model = map_patch_full_recon_model.to(device)
+
+# Fix shifts/rots/gamma and only optimise x for a clean reconstruction.
+set_trainable(map_patch_full_recon_model, shifts=False, rots=False, gamma=False, x=True)
+run_stage(
+    model=map_patch_full_recon_model,
+    y_obs=y_obs.to(device=device, dtype=torch.float32),
+    lr=1e-2,
+    name="map_patch_full_recon_x_only",
+    device=device,
+    max_steps=400,
+)
+
+save_image(map_patch_full_recon_model.get_HR(), map_patch_dir / "full" / "reconstruction.png")
+save_params(map_patch_dir / "full" / "params_used.json", map_patch_shifts, map_patch_rots, map_patch_gamma)
+
+
+# ============================================================
+# SUMMARY
+# ============================================================
+print("\n" + "=" * 60)
+print("DONE")
+print("=" * 60)
+print(f"Results saved to: {results_dir}")
+print()
+print(f"{'Model':<20} {'gamma':>8}  {'mean |shift err|':>18}  {'mean |rot err| (deg)':>22}")
+print("-" * 74)
+
+import numpy as np
+
+def summarise(label, learned_shifts, learned_rots, learned_gamma):
+    s_err = float(torch.mean(torch.norm(learned_shifts - true_shifts, dim=1)).item())
+    r_err = float(torch.mean(torch.abs(learned_rots - true_rots)).item())
+    r_err_deg = float(np.degrees(r_err))
+    g = float(learned_gamma.item())
+    print(f"{label:<20} {g:>8.3f}  {s_err:>18.4f}  {r_err_deg:>22.4f}")
+
+summarise("Bayes (patch)",   bayes_shifts,     bayes_rots,     bayes_gamma)
+summarise("MAP (full)",      map_full_shifts,  map_full_rots,  map_full_gamma)
+summarise("MAP (patch)",     map_patch_shifts, map_patch_rots, map_patch_gamma)
+print(f"{'True gamma':<20} {gamma:>8.3f}")
