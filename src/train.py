@@ -32,8 +32,10 @@ r = 1.0
 bayes_full_steps = 300
 
 # patch_lr_bounds = (12, 12, 8, 8)   # (lr_top, lr_left, lr_h, lr_w)
-patch_lr_bounds = (4, 4, 20, 20)   # Larger patch?
-patch_hr_margin = 6
+# patch_lr_bounds = (4, 4, 20, 20)   # Larger patch?
+# patch_hr_margin = 6
+patch_lr_bounds = (11, 11, 9, 9)
+patch_hr_margin = 8
 
 use_true_init = False   # debugging only
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -41,7 +43,7 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 # ============================================================
 # PATHS
 # ============================================================
-results_dir = Path("imgs/test_optim")
+results_dir = Path("imgs/test_claude_upgrade")
 data_dir = results_dir / "data"
 bayes_dir = results_dir / "bayes"
 map_dir = results_dir / "map"
