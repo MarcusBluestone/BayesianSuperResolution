@@ -8,7 +8,7 @@ import numpy as np
 # ============================================================
 # CONFIG  — edit results_dir to point at your run
 # ============================================================
-results_dir = Path("imgs/test_map_patch")
+results_dir = Path("results")
 plot_dir = results_dir / "plots"
 plot_dir.mkdir(parents=True, exist_ok=True)
 
@@ -152,11 +152,12 @@ bars = ax.barh(names, gammas, color=bar_colors, height=0.5)
 ax.axvline(x=true_vals["gamma"], color="black", linestyle="--",
            linewidth=1.5, label=f"True γ = {true_vals['gamma']}")
 ax.set_xlabel("Learned γ", fontsize=14)
+ax.set_xlim(0, 4)
 ax.set_title("PSF width (γ) estimation", fontsize=16)
 ax.legend(fontsize=11)
 for bar, val in zip(bars, gammas):
     ax.text(bar.get_width() + 0.02, bar.get_y() + bar.get_height() / 2,
-            f"{val:.3f}", va="center", fontsize=11)
+            f"{val:.2f}", va="center", fontsize=11)
 fig.tight_layout()
 fig.savefig(plot_dir / "gamma_comparison.png", dpi=150)
 plt.close(fig)
