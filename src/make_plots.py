@@ -110,9 +110,9 @@ for offset, (name, d) in zip(offsets, parsed.items()):
     ax.bar(idx + offset, d["rot_err_deg"], width=bar_width,
            color=colors[name], label=name)
 
-ax.set_xlabel("Observation index", fontsize=14)
-ax.set_ylabel("Absolute rotation error (degrees)", fontsize=14)
-ax.set_title("Rotation absolute error by observation", fontsize=16)
+ax.set_xlabel("Observation index", fontsize=20)
+ax.set_ylabel("Absolute rotation error (degrees)", fontsize=20)
+ax.set_title("Rotation absolute error by observation", fontsize=20)
 ax.legend(fontsize=12)
 fig.tight_layout()
 fig.savefig(plot_dir / "rotation_abs_error_deg.png", dpi=150)
