@@ -4,6 +4,12 @@ This README explains how to run the optimization, generate plots, and create the
 
 ---
 
+## 📄 Paper Writeup
+![Project preview](./figs/recons.png)
+
+The full writeup in this repo at [`./writeup.pdf`](./writeup.pdf). 
+
+
 ## 🚀 Running the Optimization
 
 Before running the optimization, open:
