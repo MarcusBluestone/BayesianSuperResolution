@@ -4,10 +4,10 @@ This README explains how to run the optimization, generate plots, and create the
 
 ---
 
-## 📄 Paper Writeup
-![Project preview](./latex_files/figs/recons.png)
+## 📄 Overview
+![Project preview](./cover_page.png)
 
-The full writeup in this repo at [`./writeup.pdf`](./writeup.pdf). 
+The full writeup of our work is saved in this repo as  [`writeup.pdf`](./writeup.pdf). The original paper is also saved as [`original_paper.pdf`](./original_paper.pdf). 
 
 
 ## 🚀 Running the Optimization
