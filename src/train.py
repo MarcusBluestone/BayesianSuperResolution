@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+import numpy as np
 
 import torch
 from PIL import Image
@@ -42,11 +43,11 @@ patch_hr_margin = 5
 use_true_init = False
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
-
+results_dir = Path("imgs/bigger_patch")
+hr_img_path = Path("imgs/hr.jpg")
 # ============================================================
 # DIRECTORY LAYOUT
 # ============================================================
-results_dir = Path("imgs/bigger_patch")
 data_dir    = results_dir / "data"
 bayes_dir   = results_dir / "bayes"
 map_full_dir   = results_dir / "map_full"
@@ -70,7 +71,7 @@ for path in [
 # DATA GENERATION
 # ============================================================
 print("Loading HR image...")
-hr_img = Image.open("imgs/hr.jpg").convert("L")
+hr_img = Image.open(hr_img_path).convert("L")
 hr_img = hr_img.resize(hr_shape.tolist()[::-1])   # PIL expects (W, H)
 hr_img.save(data_dir / "hr_resized.png")
 hr_img = transforms.ToTensor()(hr_img)
@@ -284,8 +285,6 @@ print(f"Results saved to: {results_dir}")
 print()
 print(f"{'Model':<20} {'gamma':>8}  {'mean |shift err|':>18}  {'mean |rot err| (deg)':>22}")
 print("-" * 74)
-
-import numpy as np
 
 def summarise(label, learned_shifts, learned_rots, learned_gamma):
     s_err = float(torch.mean(torch.norm(learned_shifts - true_shifts, dim=1)).item())
